@@ -36,8 +36,9 @@ struct Particle {
 ### 3.1. 予測（Prediction / Motion Update）
 オドメトリが受信されるたびに実行します。
 
-1. 前回のオドメトリと今回のオドメトリの差分（$\Delta x, \Delta y, \Delta \theta$）を計算します。
+1. 前回のオドメトリと今回のオドメトリの差分（$\Delta x$, $\Delta y$, $\Delta \theta$）を計算します。
 2. この差分にノイズ（Motion Model）を加えて、各パーティクルを移動させます。ロボットの移動には必ず誤差が伴うため、このノイズを加えることで、不確実性（広がり）を表現します。
+
 $$\text{New\_pose} = \text{Old\_pose} + \text{Motion\_model}(\text{Odometry\_diff})$$
 
 ### 3.2. 更新（Update / Measurement Update）
@@ -46,6 +47,7 @@ $$\text{New\_pose} = \text{Old\_pose} + \text{Motion\_model}(\text{Odometry\_dif
 1. **観測モデル（Measurement Model）**を適用し、スキャンデータが地図とどれだけ一致するかを計算します。
 - 方法: 各パーティクルの位置から仮想的なレーザーをマップ上に照射し、その結果（予測される距離）と、実際に受信したレーザーデータ（実測距離）を比較します。
 2. 一致度が高いほど、パーティクルの重みが高くなります。一般的に、ガウス分布や指数分布などを用いて重みを計算します。
+
 $$\text{Weight}_i \propto P(\text{Scan} \mid \text{Particle}_i)$$
 
 ### 3.3. リサンプリング（Resampling）
@@ -64,6 +66,7 @@ $$\text{Weight}_i \propto P(\text{Scan} \mid \text{Particle}_i)$$
 2. パーティクルパブリッシュ: デバッグ用に、すべてのパーティクルの位置をgeometry_msgs::msg::PoseArray としてパブリッシュすると、RVizでパーティクルの分布を確認でき、学習に役立ちます。
 ### C. TFブロードキャスト
 自己位置推定ノードの最も重要な役割の一つは、**map座標系からodom座標系への変換（$T_{map \rightarrow odom}$）**をブロードキャストすることです。
+
 $$\text{map} \xrightarrow{T_{map \rightarrow odom}} \text{odom}$$
 
 このTFをブロードキャストすることで、ナビゲーションスタック全体が、オドメトリ座標系での相対的な移動を、静的な地図座標系（map）内の絶対的な位置に変換できるようになります。tf2_ros::TransformBroadcasterを使用して実装します。
