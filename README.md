@@ -1,0 +1,2 @@
+# localization_node
+Geminiから二次元自己位置推定ノードを学ぶ
