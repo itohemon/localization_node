@@ -6,6 +6,7 @@
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include "tf2_ros/transform_broadcaster.h"
 #include "tf2/LinearMath/Quaternion.h"
+#include "tf2/LinearMath/Matrix3x3.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include <random>
 #include <cmath>
@@ -122,34 +123,66 @@ private:
         RCLCPP_INFO(this->get_logger(), "Particles initialized: %d", num_particles_);
     }
 
+    // クォータニオンからヨー角[rad]を抽出するヘルパー関数
+    double get_yaw_from_quaternion(const geometry_msgs::msg::Quaternion& q)
+    {
+        tf2::Quaternion tf_q;
+        tf2::fromMsg(q, tf_q);  // geometry_msgs::msg::Quaternionをtf2::Quaternionに変換
+
+        tf2::Matrix3x3 m(tf_q);
+        double roll, pitch, yaw;
+        m.getRPY(roll, pitch, yaw); // ロール、ピッチ、ヨーを抽出
+
+        return yaw;
+    }
+
     // 予測ステップ：オドメトリ情報に基づいてパーティクルを移動させる
     void motionUpdate(const nav_msgs::msg::Odometry::SharedPtr current_odom)
     {
-        // オドメトリの差分計算 (dx, dy, dtheta)
-        // 複雑なオドメトリモデルの代わりに、ここでは簡易な差分を使用
-        double dx = current_odom->pose.pose.position.x - last_odom_->pose.pose.position.x;
-        double dy = current_odom->pose.pose.position.y - last_odom_->pose.pose.position.y;
-        // 角度差分はQuaternionを変換して計算が必要（省略）
-        // double dtheta = ... ;
+        if (!last_odom_) return;
 
-        // ここでは便宜上、簡単な移動とランダムノイズを適用
-        double dtheta = 0.05; // 簡易的な角度変化の仮定
-        double dist = std::hypot(dx, dy);
+        // 1. オドメトリの絶対姿勢を取得
+        double current_x = current_odom->pose.pose.position.x;
+        double current_y = current_odom->pose.pose.position.y;
+        double current_theta = get_yaw_from_quaternion(current_odom->pose.pose.orientation);
 
-        // ノイズモデル
-        std::normal_distribution<> motion_noise_dist(0.0, 0.05); // 標準偏差 0.05m/rad
+        double last_x = last_odom_->pose.pose.position.x;
+        double last_y = last_odom_->pose.pose.position.y;
+        double last_theta = get_yaw_from_quaternion(last_odom_->pose.pose.orientation);
+
+        // 2. odom座標系における移動差分(delta_dist, delta_theta)を計算
+        // ここで計算されるのは、ロボットのローカル座標系ではなく、odom座標系における移動
+        double delta_x_odom = current_x - last_x;
+        double delta_y_odom = current_y - last_y;
+        double delta_theta = current_theta - last_theta;
+
+        // 角度差分を[-pi, pi]に正規化(回転が360度を超えても正しく扱うため)
+        while (delta_theta > M_PI) delta_theta -= 2.0 * M_PI;
+        while (delta_theta < -M_PI) delta_theta += 2.0 * M_PI;
+        
+        // odom座標系ではなく、ロボットのローカル座標系における移動量(delta_forward)を計算
+        // これは、パーティクルを移動させるための「真の移動指令」に近い
+        double delta_dist = std::hypot(delta_x_odom, delta_y_odom);
+
+        // ローカル座標系での前方移動量
+        // odom座標系での移動ベクトルを、last_thetaで逆回転してローカル座標系に変換
+        double delta_forward = std::cos(last_theta) * delta_x_odom + std::sin(last_theta) * delta_y_odom;
+        double delta_sideways = -std::sin(last_theta) * delta_x_odom + std::cos(last_theta) * delta_y_odom;
+
+        // 3. ノイズモデル(Motion Model)を適用してパーティクルを移動
+        std::normal_distribution<> forward_noise_dist(0.0, 0.05); // 前方移動ノイズ
+        std::normal_distribution<> turn_noise_dist(0.0, 0.01);  // 回転ノイズ
 
         for (auto &p : particles_)
         {
-            // 現在の姿勢 (p.x, p.y, p.theta) にノイズを加えて移動
-            // 新しい姿勢 = 古い姿勢 + (移動量 * ノイズ)
-            double noise_x = motion_noise_dist(random_engine);
-            double noise_y = motion_noise_dist(random_engine);
-            double noise_theta = motion_noise_dist(random_engine);
+            // ノイズを加えた移動量
+            double noisy_delta_forward = delta_forward + forward_noise_dist(random_engine);
+            double noisy_delta_theta = delta_theta + turn_noise_dist(random_engine);
 
-            p.x += (dist + noise_x) * std::cos(p.theta);
-            p.y += (dist + noise_y) * std::sin(p.theta);
-            p.theta += (dtheta + noise_theta);
+            // ローカル座標系の移動量を、パーティクルの姿勢(p.theta)に基づいてマップ座標系に変換
+            p.x += noisy_delta_forward * std::cos(p.theta);
+            p.y += noisy_delta_forward * std::sin(p.theta);
+            p.theta += noisy_delta_theta;
 
             // 角度を [-pi, pi] に正規化
             p.theta = std::fmod(p.theta + M_PI, 2.0 * M_PI);
