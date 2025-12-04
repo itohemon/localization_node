@@ -124,10 +124,10 @@ private:
     }
 
     // クォータニオンからヨー角[rad]を抽出するヘルパー関数
-    double get_yaw_from_quaternion(const geometry_msgs::msg::Quaternion& q)
+    double get_yaw_from_quaternion(const geometry_msgs::msg::Quaternion &q)
     {
         tf2::Quaternion tf_q;
-        tf2::fromMsg(q, tf_q);  // geometry_msgs::msg::Quaternionをtf2::Quaternionに変換
+        tf2::fromMsg(q, tf_q); // geometry_msgs::msg::Quaternionをtf2::Quaternionに変換
 
         tf2::Matrix3x3 m(tf_q);
         double roll, pitch, yaw;
@@ -139,7 +139,8 @@ private:
     // 予測ステップ：オドメトリ情報に基づいてパーティクルを移動させる
     void motionUpdate(const nav_msgs::msg::Odometry::SharedPtr current_odom)
     {
-        if (!last_odom_) return;
+        if (!last_odom_)
+            return;
 
         // 1. オドメトリの絶対姿勢を取得
         double current_x = current_odom->pose.pose.position.x;
@@ -157,9 +158,11 @@ private:
         double delta_theta = current_theta - last_theta;
 
         // 角度差分を[-pi, pi]に正規化(回転が360度を超えても正しく扱うため)
-        while (delta_theta > M_PI) delta_theta -= 2.0 * M_PI;
-        while (delta_theta < -M_PI) delta_theta += 2.0 * M_PI;
-        
+        while (delta_theta > M_PI)
+            delta_theta -= 2.0 * M_PI;
+        while (delta_theta < -M_PI)
+            delta_theta += 2.0 * M_PI;
+
         // odom座標系ではなく、ロボットのローカル座標系における移動量(delta_forward)を計算
         // これは、パーティクルを移動させるための「真の移動指令」に近い
         double delta_dist = std::hypot(delta_x_odom, delta_y_odom);
@@ -171,7 +174,7 @@ private:
 
         // 3. ノイズモデル(Motion Model)を適用してパーティクルを移動
         std::normal_distribution<> forward_noise_dist(0.0, 0.05); // 前方移動ノイズ
-        std::normal_distribution<> turn_noise_dist(0.0, 0.01);  // 回転ノイズ
+        std::normal_distribution<> turn_noise_dist(0.0, 0.01);    // 回転ノイズ
 
         for (auto &p : particles_)
         {
@@ -192,43 +195,119 @@ private:
         }
     }
 
+    // ワールド座標 (メートル) をマップのグリッドセル座標 (インデックス) に変換
+    bool worldToMap(double world_x, double world_y, int &map_x, int &map_y,
+                    const nav_msgs::msg::OccupancyGrid::SharedPtr &map)
+    {
+        if (!map)
+            return false;
+
+        // マップの原点 (origin) からの相対位置
+        double relative_x = world_x - map->info.origin.position.x;
+        double relative_y = world_y - map->info.origin.position.y;
+
+        // 解像度 (resolution) を使ってセルインデックスに変換
+        map_x = static_cast<int>(std::floor(relative_x / map->info.resolution));
+        map_y = static_cast<int>(std::floor(relative_y / map->info.resolution));
+
+        // マップの境界チェック
+        return map_x >= 0 && map_x < (int)map->info.width &&
+               map_y >= 0 && map_y < (int)map->info.height;
+    }
+
+    // マップのグリッドセル値を取得する
+    int getMapValue(int map_x, int map_y, const nav_msgs::msg::OccupancyGrid::SharedPtr &map)
+    {
+        if (!map || map_x < 0 || map_x >= (int)map->info.width ||
+            map_y < 0 || map_y >= (int)map->info.height)
+        {
+            return -1; // 範囲外
+        }
+        // 一次元配列のインデックス計算: index = y * width + x
+        return map->data[map_y * map->info.width + map_x];
+    }
+
     // 更新ステップ：レーザースキャンとマップの一致度に基づいて重みを計算
     void measurementUpdate(const sensor_msgs::msg::LaserScan::SharedPtr scan)
     {
+        if (!map_data_)
+            return;
+
         double total_weight = 0.0;
 
-        // 観測ノイズモデル（標準偏差）
+        // 観測ノイズモデル（標準偏差）：一致しなかった場合の尤度のガウス分布
         std::normal_distribution<> measurement_noise_dist(0.0, 0.2);
+
+        // レーザーの原点から本体までのオフセット (TFが必要だが、ここでは簡易的にゼロとする)
+        // const double laser_offset_x = 0.0;
+        // const double laser_offset_y = 0.0;
+
+        // 尤度を計算するビームの間隔を定義 (計算負荷軽減のため)
+        const int step = 5; // 5ビームごとにチェックする
 
         for (auto &p : particles_)
         {
-            double likelihood = 1.0;
+            double log_likelihood_sum = 0.0; // 対数尤度の和
 
-            // 📌 重要: ここに観測モデルのロジックを実装する
-            // 1. 各パーティクルpの位置から、スキャンビームの終端座標 (x_scan, y_scan) を計算する。
-            // 2. マップデータ (map_data_) 上の (x_scan, y_scan) の占有確率（Occupancy Grid Value）を取得する。
-            // 3. 占有確率が高い（障害物に当たっている）ほど、そのパーティクルは実測スキャンと一致していると見なす。
-
-            // 例: 簡易的な実装（ここではマップとのチェックを省略し、観測ノイズのみを考慮）
-            // 実際のAMCLでは、ビームエンドポイントモデルや尤度場モデルを使用します。
-
-            // 全スキャン点の平均尤度を計算 (ここはスタブ)
-            double avg_match_score = 0.0;
-            for (size_t i = 0; i < scan->ranges.size(); ++i)
+            for (size_t i = 0; i < scan->ranges.size(); i += step)
             {
-                // ... 観測モデルの実装 ...
-                // avg_match_score += score_from_map_check;
+                double range = scan->ranges[i];
+
+                // 範囲外や不明な値はスキップ
+                if (std::isinf(range) || std::isnan(range) || range > scan->range_max)
+                {
+                    continue;
+                }
+
+                // 1. パーティクルの姿勢に基づいたビームの絶対角度を計算
+                double angle = p.theta + scan->angle_min + i * scan->angle_increment;
+
+                // 2. ビームの終点座標 (ワールド座標) を計算
+                double end_x = p.x + range * std::cos(angle);
+                double end_y = p.y + range * std::sin(angle);
+
+                // 3. マップグリッドセルインデックスに変換
+                int map_x, map_y;
+                if (!worldToMap(end_x, end_y, map_x, map_y, map_data_))
+                {
+                    // マップの範囲外なら、この観測は無視
+                    continue;
+                }
+
+                // 4. マップ値を取得
+                int map_value = getMapValue(map_x, map_y, map_data_);
+
+                // 5. 尤度の評価 (簡易モデル)
+                // マップ値は通常 0 (空き) から 100 (占有) の値を取る
+                double match_score;
+                if (map_value > 70)
+                {
+                    // 障害物に当たっているセルと一致 -> 高い尤度
+                    match_score = 0.9;
+                }
+                else if (map_value < 10)
+                {
+                    // 空きセルと一致 -> 低い尤度
+                    match_score = 0.05;
+                }
+                else
+                {
+                    // 不明なセルや中間値 -> 中程度の尤度
+                    match_score = 0.3;
+                }
+
+                // 対数尤度を追加 (積の計算を和に変換し、数値安定性を高める)
+                // log(p_i) = log(match_score)
+                log_likelihood_sum += std::log(match_score);
             }
 
-            // 簡易尤度の計算
-            // scoreが高いほど尤度が高くなるようにする
-            likelihood = std::exp(avg_match_score * (-0.5)); // 例
-
-            p.weight *= likelihood;
+            // 6. 重みの更新
+            // log尤度の和を指数関数に戻して、パーティクルの重みに乗算
+            p.weight *= std::exp(log_likelihood_sum);
             total_weight += p.weight;
         }
 
-        // 重みの正規化
+        // 7. 重みの正規化
         if (total_weight > 0.0)
         {
             for (auto &p : particles_)
