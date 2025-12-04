@@ -332,6 +332,15 @@ private:
             cumulative_weights.push_back(total_weight);
         }
 
+        // **重みがゼロの状況を避けるガード**
+        if (total_weight == 0.0)
+        {
+            // 全ての重みがゼロの場合、パーティクルを再初期化するか、均等重みにリセットする。
+            // ここでは簡易的に処理をスキップ
+            RCLCPP_WARN(this->get_logger(), "Total weight is zero. Resampling skipped.");
+            return;
+        }
+
         // ルーレット選択（またはLow Variance Sampling）の実施
         std::uniform_real_distribution<> weight_dist(0.0, total_weight);
 
@@ -339,23 +348,25 @@ private:
         {
             double random_val = weight_dist(random_engine);
 
-            // ランダム値がどのパーティクルの累積重みに該当するかを探す
+            // ランダム値がどのパーティクルの累積重みに該当するかを二分探索で高速に探す
+            // std::lower_bound は、random_val以上の値を持つ最初の要素を指すイテレータを返す
             auto it = std::lower_bound(cumulative_weights.begin(), cumulative_weights.end(), random_val);
             size_t index = std::distance(cumulative_weights.begin(), it);
 
+            // 選択されたパーティクルを新しいリストに追加
             if (index < particles_.size())
             {
-                // 重みが大きいパーティクルをコピーして再生成
                 new_particles.push_back(particles_[index]);
-                new_particles.back().weight = 1.0 / num_particles_; // 重みを均等にリセット
             }
             else
             {
-                // エラー時のフォールバック
+                // エラー時のフォールバック (通常は起こらないはず)
                 new_particles.push_back(particles_[0]);
-                new_particles.back().weight = 1.0 / num_particles_;
             }
+            // 重みを均等にリセット（重要）
+            new_particles.back().weight = 1.0 / num_particles_;
         }
+
         particles_ = new_particles;
     }
 
